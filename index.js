@@ -96,7 +96,7 @@ function charKey(char) {
     return STORE_PREFIX + (char?.avatar || char?.name || 'unknown');
 }
 
-const emptyCharData = () => ({ urls: [], refText: '', authorNote: '', history: [], names: null, voiceProfile: null, nsfwProfile: null, voiceResults: {}, doctor: null, runs: [], abBaselineId: null, abLast: null, applyLog: [], funProfile: null, caehBase: '', caehCaution: '', anchorText: '', anchorTime: 0, anchorBind: false, contLast: null, sourceLang: 'auto', botKind: 'single', rosterText: '', voiceMember: '', memberVoice: {} });
+const emptyCharData = () => ({ urls: [], refText: '', authorNote: '', history: [], names: null, voiceProfile: null, voiceResults: {}, doctor: null, runs: [], abBaselineId: null, abLast: null, applyLog: [], funProfile: null, caehBase: '', caehCaution: '', anchorText: '', anchorTime: 0, anchorBind: false, contLast: null, sourceLang: 'auto', botKind: 'single', rosterText: '', voiceMember: '', memberVoice: {} });
 
 async function loadCharData(char) {
     if (!char) return emptyCharData();
@@ -2808,79 +2808,75 @@ async function buildVoiceProfile() {
     }
 }
 
-function renderNsfwProfile(vp) {
-    const view = $id('bt_nsfw_profile_view');
-    const meta = $id('bt_nsfw_profile_meta');
+// ---------- Optional adult-only NSFW profile ----------
+
+function renderNsfwProfile(entry) {
+    const view = $id('nsfw_view');
+    const meta = $id('nsfw_meta');
     if (!view) return;
-    if (!vp?.profile) {
-        view.innerHTML = '<p class="bt-note">성인 캐릭터의 프로필을 만들면 여기에 표시돼요.</p>';
+    if (!entry?.profile) {
+        view.innerHTML = '<p class="bt-note">성인 확인 후 프로필을 만들 수 있어요.</p>';
         if (meta) meta.textContent = '아직 없어요';
         return;
     }
-    if (meta) meta.textContent = new Date(vp.time).toLocaleString();
-    const p = vp.profile;
+    const p = entry.profile;
+    if (meta) meta.textContent = entry.time ? new Date(entry.time).toLocaleString() : '저장됨';
     const sections = [
-        ['캐릭터·성인 여부', p.character_and_age],
-        ['친밀감과 관계 역학', p.intimacy_style],
-        ['선호', p.preferences],
-        ['비선호·금기', p.dislikes_and_limits],
-        ['동의와 경계', p.consent_and_boundaries],
-        ['감정 및 상황별 반응', p.emotional_responses],
-        ['말투·표현 방식', p.voice_and_expression],
-        ['롤플레이 작성 가이드', p.roleplay_guidance],
-        ['불확실한 설정 / 주의사항', p.caveats],
+        ['캐릭터의 친밀감 표현', p.intimacy_style],
+        ['성적 성향 및 선호', p.preferences],
+        ['비선호·불편 요소', p.dislikes_boundaries],
+        ['관계 역학', p.relationship_dynamics],
+        ['동의·안전·경계', p.consent_and_boundaries],
+        ['상황별 반응', p.contextual_reactions],
+        ['말투와 표현', p.voice_and_expression],
+        ['원작 / 해석 구분', p.canon_vs_interpretation],
+        ['불확실한 점', p.uncertainties],
     ];
-    view.innerHTML = sections.filter(([,v]) => v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && !v.length))
-        .map(([title, value]) => {
-            const content = Array.isArray(value)
-                ? `<ul class="bt-list">${value.map(x => `<li>${escapeHtml(typeof x === 'string' ? x : JSON.stringify(x))}</li>`).join('')}</ul>`
-                : typeof value === 'object'
-                    ? `<dl class="bt-dl bt-dl-wide">${Object.entries(value).map(([k,v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(Array.isArray(v) ? v.join(' · ') : typeof v === 'object' ? JSON.stringify(v) : String(v ?? ''))}</dd>`).join('')}</dl>`
-                    : `<p>${escapeHtml(String(value))}</p>`;
-            return `<article class="bt-vcard"><div class="bt-vcard-head"><h4>${escapeHtml(title)}</h4></div>${content}</article>`;
-        }).join('') || '<p class="bt-note">모델이 프로필 항목을 반환하지 않았어요. 다시 생성해 주세요.</p>';
+    view.innerHTML = sections.filter(([, v]) => v && (Array.isArray(v) ? v.length : String(v).trim()))
+        .map(([title, value]) => `<section class="bt-explain"><span class="bt-explain-label">${escapeHtml(title)}</span><div class="bt-prose">${Array.isArray(value) ? renderList(value) : prose(String(value))}</div></section>`).join('')
+        || '<p class="bt-note">표시할 내용이 없어요.</p>';
 }
 
 async function buildNsfwProfile() {
     if (running) { toastr.warning('다른 작업이 진행 중이에요'); return; }
+    if (!$id('nsfw_adult_confirm')?.checked) {
+        toastr.warning('대상 캐릭터가 명백한 성인임을 먼저 확인해주세요.');
+        return;
+    }
     const char = getCurrentCharacter();
     if (!char) { toastr.error('1:1 캐릭터 채팅을 열어주세요'); return; }
-    const cd = await loadVoiceData(char);
-    readNamesFromUI(cd);
     const s = getSettings();
+    const d = await loadVoiceData(char);
+    readNamesFromUI(d);
+    const extra = ($id('nsfw_notes')?.value || '').trim();
     running = true;
     updateRunState();
     try {
-        const n = cd.names || emptyNames();
-        const card = truncate(collectCard(char), 9000);
-        const canon = cd.refText ? truncate(cd.refText, 7000) : 'No reference material supplied.';
-        const existing = cd.voiceProfile?.profile ? JSON.stringify(cd.voiceProfile.profile).slice(0, 5000) : 'No separate voice profile available.';
+        if (!d.names?.ja && !d.names?.en && !d.names?.ko) {
+            d.names = await autofillNames(char, d);
+            writeNamesToUI(d.names);
+        }
         const system = [
-            'You are a character-writing analyst creating a separate NSFW/intimacy reference profile for fictional adult characters.',
-            'Only create sexual/intimacy material when the character is clearly an adult (18+). If age is under 18, ambiguous, or the character is depicted as a minor, do not sexualize them; return a safe profile explaining that NSFW content is unavailable and focus on non-sexual affection and boundaries.',
-            'Keep the profile useful for roleplay characterization, not graphic pornographic scene writing. Never infer consent from silence, intoxication, coercion, fear, or inability to consent. Emphasize explicit consent, boundaries, safewords where relevant, aftercare where relevant, and character-specific dislikes.',
-            'Distinguish canon evidence from interpretation. Do not invent canon sexual history or preferences; label unknowns clearly and keep confidence conservative. Do not assume orientation or preferences from fandom shipping. Exclude minors and incestuous sexual content.',
-            'Write in Korean. Output exactly one JSON object, no markdown.',
-            '{"character_and_age":"...","intimacy_style":"...","preferences":["..."],"dislikes_and_limits":["..."],"consent_and_boundaries":["..."],"emotional_responses":["..."],"voice_and_expression":"...","roleplay_guidance":["..."],"caveats":["..."]}',
-        ].join('\n');
+            'You are a careful character-writing analyst. Create an adult-only, non-graphic NSFW characterization profile for a fictional character who is explicitly confirmed to be an adult.',
+            'Do not sexualize minors or characters whose age is ambiguous; if source material conflicts with adult confirmation, return a refusal JSON with an explanation.',
+            'Do not invent canon. Distinguish sourced canon from fan interpretation and user-provided AU. Treat consent, boundaries, communication, and agency as important characterization details.',
+            'Avoid explicit anatomical detail or pornographic scene prose. Focus on characterization useful for mature roleplay: intimacy style, preferences at a high level, dislikes, relationship dynamics, consent/boundaries, contextual reactions, voice, and uncertainties.',
+            'Write explanations in Korean. Output one JSON object only, no markdown fences, with keys: intimacy_style (string), preferences (array), dislikes_boundaries (array), relationship_dynamics (array), consent_and_boundaries (array), contextual_reactions (array), voice_and_expression (string), canon_vs_interpretation (array), uncertainties (array), refusal (string).',
+        ].join('\\n');
         const prompt = [
-            `[Character] ${voiceName(char, cd)} / Japanese: ${n.ja || ''} / English: ${n.en || ''} / Korean: ${n.ko || ''}`,
-            `[Series] ${n.seriesJa || ''} / ${n.seriesEn || ''} / ${n.seriesKo || ''}`,
-            `[Character card]\n${card}`,
-            `[Canon/reference material]\n${canon}`,
-            `[Existing non-NSFW voice/personality profile]\n${existing}`,
-            'Create a character-specific profile. Mark all unsupported intimate details as unknown rather than presenting them as canon. If adult status cannot be established from the supplied evidence, return a non-sexual safe profile.',
-        ].join('\n\n');
-        const result = await requestJsonComplete({
-            system, prompt, profileId: s.evalProfile,
-            maxTokens: Math.max(Number(s.profileMaxTokens) || 0, 5000),
-            label: '🔞 성인 캐릭터 NSFW 프로필 정리 중…',
-        });
-        const profile = result && typeof result === 'object' ? result : jsonrepair(String(result));
-        cd.nsfwProfile = { time: Date.now(), profile };
-        await saveVoiceData(char, cd);
-        renderNsfwProfile(cd.nsfwProfile);
-        const box = $id('bt_nsfw_profile_box'); if (box) box.open = true;
+            `[Character] ${voiceName(char, d)} / JA: ${d.names.ja || ''} / EN: ${d.names.en || ''} / KO: ${d.names.ko || ''}`,
+            `[Series] ${d.names.seriesJa || ''} / ${d.names.seriesEn || ''} / ${d.names.seriesKo || ''}`,
+            '[Adult status] The user explicitly confirmed this character is an adult.',
+            d.refText ? `[Reference material]\\n${truncate(d.refText, 10000)}` : '[No reference material supplied]',
+            d.voiceProfile?.profile ? `[Existing canon/personality profile]\\n${JSON.stringify(d.voiceProfile.profile).slice(0, 7000)}` : '',
+            extra ? `[User-provided adult AU / relationship context]\\n${truncate(extra, 3000)}` : '',
+            'Create the profile. Mark any non-canon or speculative points clearly.',
+        ].filter(Boolean).join('\\n\\n');
+        const raw = await requestJsonComplete({ system, prompt, profileId: s.evalProfile, maxTokens: Math.max(Number(s.profileMaxTokens) || 0, 12000), label: '🔞 NSFW 프로필 정리 중…' });
+        if (raw?.refusal) throw new Error(raw.refusal);
+        d.nsfwProfile = { time: Date.now(), profile: raw };
+        await saveVoiceData(char, d);
+        renderNsfwProfile(d.nsfwProfile);
         setStatus('✅ NSFW 프로필 완성');
         toastr.success('NSFW 프로필을 만들었어요');
     } catch (e) {
@@ -3244,7 +3240,17 @@ function bindVoicePage() {
             running = false; updateRunState();
         }
     });
-    $id('buildprofile').addEventListener('click', async () => { await saveSourceFromUI(false); buildVoiceProfile(); });\n    $id('bt_build_nsfw_profile')?.addEventListener('click', async () => { await saveSourceFromUI(false); buildNsfwProfile(); });
+    $id('buildprofile').addEventListener('click', async () => { await saveSourceFromUI(false); buildVoiceProfile(); });
+    $id('nsfw_build')?.addEventListener('click', async () => { await saveSourceFromUI(false); buildNsfwProfile(); });
+    $id('nsfw_clear')?.addEventListener('click', async () => {
+        const ch = getCurrentCharacter();
+        if (!ch) return toastr.error('1:1 캐릭터 채팅을 열어주세요');
+        const d = await loadVoiceData(ch);
+        d.nsfwProfile = null;
+        await saveVoiceData(ch, d);
+        renderNsfwProfile(null);
+        toastr.success('NSFW 프로필을 삭제했어요');
+    });
     document.querySelectorAll('#bt_panel .bt-vset-btn[data-set]').forEach(btn => btn.addEventListener('click', async () => {
         if (running) return;
         await saveSourceFromUI(false);
@@ -3300,15 +3306,25 @@ function voicePageHtml() {
         </details>
       </section>
 
-      <section class="bt-card bt-nsfw-card">
-        ${cardHead('Optional · 18+', 'NSFW 프로필', '성인 캐릭터 전용. 기존 말투·성격 프로필과 분리 저장되며, 합의·경계·비선호를 포함한 친밀감 설정을 정리해요.')}
-        <div class="bt-actions">
-          <button type="button" id="bt_build_nsfw_profile" class="bt-btn">${ico('heart')}<span>NSFW 프로필 만들기</span></button>
-          <span class="bt-note" id="bt_nsfw_profile_meta">아직 없어요</span>
+      <section class="bt-card bt-card-accent" id="bt_nsfw_card">
+        ${cardHead('OPTIONAL · 19+', 'NSFW 프로필', '성인 캐릭터 전용. 원작 설정과 해석을 구분해 친밀감·성적 성향·경계·관계 역학을 별도 프로필로 정리해요.')}
+        <label class="bt-switch">
+          <input type="checkbox" id="bt_nsfw_adult_confirm">
+          <span class="bt-switch-track"></span>
+          <span class="bt-switch-text"><b>대상 캐릭터가 명백한 성인임을 확인했어요</b><small>미성년자 또는 나이가 불명확한 캐릭터의 성적 프로필은 생성하지 않아요.</small></span>
+        </label>
+        <div class="bt-field">
+          <label class="bt-field-label" for="bt_nsfw_notes">추가 설정 / 관계 맥락 (선택)</label>
+          <textarea id="bt_nsfw_notes" class="bt-input" rows="3" placeholder="성인 설정, 관계의 전제, AU 정보 등"></textarea>
         </div>
-        <details class="bt-disclosure" id="bt_nsfw_profile_box">
+        <div class="bt-actions">
+          <button type="button" id="bt_nsfw_build" class="bt-btn bt-btn-primary">${ico('heart')}<span>NSFW 프로필 만들기</span></button>
+          <button type="button" id="bt_nsfw_clear" class="bt-btn bt-btn-danger">${ico('trash')}<span>프로필 삭제</span></button>
+          <span class="bt-note" id="bt_nsfw_meta">아직 없어요</span>
+        </div>
+        <details class="bt-disclosure" id="bt_nsfw_box">
           <summary><span>NSFW 프로필 보기</span>${ico('chevron-down')}</summary>
-          <div id="bt_nsfw_profile_view"><p class="bt-note">성인 캐릭터의 프로필을 만들면 여기에 표시돼요.</p></div>
+          <div id="bt_nsfw_view"><p class="bt-note">성인 확인 후 프로필을 만들 수 있어요.</p></div>
         </details>
       </section>
 
@@ -3570,6 +3586,7 @@ function renderVoiceResult(entry, prev) {
 function renderVoiceForChar(data) {
     writeNamesToUI(data.names);
     renderVoiceProfile(data.voiceProfile);
+    renderNsfwProfile(data.nsfwProfile);
     renderVoiceResults(data);
 }
 
@@ -6715,14 +6732,14 @@ async function loadVoiceData(char) {
     const slot = cd.memberVoice?.[who] || {};
     const r = rosterOf(cd).find(x => x.name === who);
     const names = slot.names || Object.assign(emptyNames(), { ko: who, ...(r?.orig ? (/[぀-ヿ一-鿿]/.test(r.orig) ? { ja: r.orig } : { en: r.orig }) : {}) });
-    return { ...cd, names, voiceProfile: slot.voiceProfile || null, nsfwProfile: slot.nsfwProfile || null, voiceResults: slot.voiceResults || {}, __member: who };
+    return { ...cd, names, voiceProfile: slot.voiceProfile || null, voiceResults: slot.voiceResults || {}, nsfwProfile: slot.nsfwProfile || null, __member: who };
 }
 
 async function saveVoiceData(char, vd) {
     if (!vd.__member) { await saveCharData(char, vd); return; }
     const cd = await loadCharData(char);
     cd.memberVoice = cd.memberVoice || {};
-    cd.memberVoice[vd.__member] = { names: vd.names, voiceProfile: vd.voiceProfile, nsfwProfile: vd.nsfwProfile || null, voiceResults: vd.voiceResults };
+    cd.memberVoice[vd.__member] = { names: vd.names, voiceProfile: vd.voiceProfile, voiceResults: vd.voiceResults, nsfwProfile: vd.nsfwProfile };
     await saveCharData(char, cd);
 }
 
